@@ -1,0 +1,3 @@
+├── 📄 base.txt       (Librerías de cajón como streamlit)
+├── 📄 development.txt (Herramientas de diseño o pruebas en tu PC)
+└── 📄 production.txt  (Librerías exclusivas del servidor en la nube)
