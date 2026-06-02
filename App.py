@@ -47,7 +47,7 @@ with col_config:
     else:
         puerto_sel = st.selectbox("Selecciona Puerto COM/USB Real:", puertos if puertos else ["No se detectaron puertos"])
         if "streamlit.app" in st.get_option("browser.serverAddress"):
-            st.warning("⚠️ **Estás en la nube:** Recuerda correr esto localmente en tu PC con `streamlit run app.py` para usar el USB real.")
+            st.warning("⚠️ Estás en la nube: Recuerda correr esto localmente en tu PC con 'streamlit run app.py' para usar el USB real.")
 
     # Lógica de conexión
     if not st.session_state.conectado:
@@ -96,4 +96,100 @@ with col_status:
                     st.write("### 🧠 Estado del bus I2C:")
                     st.success("🟢 Líneas de comunicación de hardware estables (0 errores I2C).")
                     st.write("### 🚫 Causas de bloqueo detectadas:")
-                    st.warning(
+                    st.warning(BETAFLIGHT_ARMING_FLAGS[7][1]) # Throttle alto
+                    st.warning(BETAFLIGHT_ARMING_FLAGS[1][1]) # Failsafe
+                else:
+                    # Código Real MSP
+                    st.session_state.ser_conn.write(b"$M<\x00\x65\x65")
+                    header = st.session_state.ser_conn.read(5)
+                    if len(header) == 5 and header[0:3] == b"$M>":
+                        payload = st.session_state.ser_conn.read(header[3])
+                        st.session_state.ser_conn.read(1)
+                        cycle, i2c_errors, sens, mode, armingFlags = struct.unpack("<HHHII", payload[:14])
+                        
+                        if i2c_errors > 0:
+                            st.error(f"❌ Se detectaron {i2c_errors} errores I2C.")
+                        else:
+                            st.success("🟢 Hardware base saludable (0 errores I2C).")
+                        
+                        for bit, (nombre, desc) in BETAFLIGHT_ARMING_FLAGS.items():
+                            if armingFlags & (1 << bit) and nombre != "MSP":
+                                st.warning(desc)
+                    else:
+                        st.error("Sin respuesta del hardware real.")
+
+        # ----------------------------------------------------------------
+        # PESTAÑA 2: ENLACE DJI O4 AIR UNIT
+        # ----------------------------------------------------------------
+        with tab_dji:
+            st.subheader("🎥 Diagnóstico de Transmisión Digital DJI O4")
+            if st.button("🔍 Comprobar Conexión de Video"):
+                if modo_simulado:
+                    st.error("❌ Falla de comunicación física (Ready: NO): La configuración existe pero la unidad DJI no responde.")
+                    st.markdown("""
+                    **Soluciones rápidas sugeridas:**
+                    1. **Conecta la LiPo:** La O4 Air Unit no enciende con el USB de la computadora. Requieres batería externa.
+                    2. **Cables TX/RX Invertidos:** El pin TX de la DJI debe ir al RX de la placa, y el RX de la DJI al TX.
+                    """)
+                else:
+                    # CLI Real
+                    st.session_state.ser_conn.write(b'#\nvtx\n')
+                    time.sleep(0.2)
+                    log_vtx = st.session_state.ser_conn.read_all().decode('utf-8', errors='ignore')
+                    st.session_state.ser_conn.write(b'exit\n')
+                    
+                    if "ready: yes" in log_vtx.lower():
+                        st.success("🟢 **DJI O4 Detectada:** Conexión serial MSP operativa.")
+                    else:
+                        st.error("❌ DJI O4 no responde. Revisa voltaje (LiPo) y cableado TX/RX cruzado.")
+
+        # ----------------------------------------------------------------
+        # PESTAÑA 3: DIAGNÓSTICO DE FORMATO OSD
+        # ----------------------------------------------------------------
+        with tab_osd:
+            st.subheader("📊 Ajuste de Caracteres en Pantalla (OSD)")
+            if st.button("🔧 Verificar Formato de Pantalla"):
+                if modo_simulado:
+                    st.metric(label="Formato de Video Configurado", value="PAL")
+                    st.error("❌ **Error de Formato:** Tienes configurado un sistema analógico (PAL/NTSC).")
+                    st.info("🛠️ **Solución para corregirlo:** Copia y pega estos comandos en la pestaña CLI de Betaflight para pasarlo a HD:")
+                    st.code("set osd_video_system = HD\nsave", language="bash")
+                else:
+                    st.session_state.ser_conn.write(b'#\nget osd_video_system\n')
+                    time.sleep(0.15)
+                    raw_osd = st.session_state.ser_conn.read_all().decode('utf-8', errors='ignore')
+                    st.session_state.ser_conn.write(b'exit\n')
+                    
+                    if "HD" in raw_osd:
+                        st.success("🟢 **Formato Correcto:** Configuración optimizada para DJI Digital (HD).")
+                    else:
+                        st.error("❌ Formato analógico detectado.")
+                        st.code("set osd_video_system = HD\nsave", language="bash")
+
+        # ----------------------------------------------------------------
+        # PESTAÑA 4: MONITOR TÉRMICO
+        # ----------------------------------------------------------------
+        with tab_termico:
+            st.subheader("🌡️ Temperatura en Banco de Trabajo")
+            if st.button("🌡️ Leer Sensores Térmicos"):
+                if modo_simulado:
+                    st.error("🚨 ¡SOBRECALENTAMIENTO CRÍTICO!: 78°C.")
+                    st.markdown("""
+                    **🛠️ Solución Obligatoria:**
+                    * **¡Desconecta la LiPo de inmediato!** Deja enfriar los componentes.
+                    * Coloca un **ventilador de mesa** apuntando directo al dron mientras trabajas en el taller. La DJI O4 genera demasiado calor estática.
+                    """)
+                else:
+                    st.session_state.ser_conn.write(b'#\nstatus\n')
+                    time.sleep(0.2)
+                    raw_status = st.session_state.ser_conn.read_all().decode('utf-8', errors='ignore')
+                    st.session_state.ser_conn.write(b'exit\n')
+                    match = re.search(r'Temp=(\d+)', raw_status)
+                    if match:
+                        temp = int(match.group(1))
+                        if temp > 70:
+                            st.error(f"🚨 Alerta Térmica: {temp}°C. ¡Usa un ventilador!")
+                        else:
+                            st.success(f"🟢 Temperatura bajo control: {temp}°C")
+                    else:
+                        st.info("Sensor no disponible en esta placa.")
